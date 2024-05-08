@@ -3,7 +3,8 @@
  */
 package io.airbyte.cdk.integrations.destination
 
-import java.util.*
+import io.airbyte.protocol.models.v0.AirbyteStreamStatusTraceMessage.AirbyteStreamStatus
+import java.util.Optional
 
 /**
  * @param recordsWritten The number of records written to the stream, or empty if the caller does
@@ -11,9 +12,7 @@ import java.util.*
  * destinations framework; new implementations should always provide this information). If this
  * value is empty, consumers should assume that the sync wrote nonzero records for this stream.
  */
-class StreamSyncSummary(val recordsWritten: Optional<Long>) {
-
-    companion object {
-        @JvmField val DEFAULT: StreamSyncSummary = StreamSyncSummary(Optional.empty())
-    }
-}
+data class StreamSyncSummary(
+    val recordsWritten: Optional<Long>,
+    val statusFromSource: AirbyteStreamStatus,
+)

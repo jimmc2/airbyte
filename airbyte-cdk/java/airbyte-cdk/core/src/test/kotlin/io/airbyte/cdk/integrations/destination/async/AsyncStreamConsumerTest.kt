@@ -6,6 +6,7 @@ package io.airbyte.cdk.integrations.destination.async
 
 import com.fasterxml.jackson.databind.JsonNode
 import edu.umd.cs.findbugs.annotations.SuppressFBWarnings
+import io.airbyte.cdk.integrations.destination.StreamSyncSummary
 import io.airbyte.cdk.integrations.destination.async.buffers.BufferManager
 import io.airbyte.cdk.integrations.destination.async.deser.AirbyteMessageDeserializer
 import io.airbyte.cdk.integrations.destination.async.deser.StreamAwareDataTransformer
@@ -25,12 +26,15 @@ import io.airbyte.protocol.models.v0.AirbyteRecordMessage
 import io.airbyte.protocol.models.v0.AirbyteStateMessage
 import io.airbyte.protocol.models.v0.AirbyteStateStats
 import io.airbyte.protocol.models.v0.AirbyteStreamState
+import io.airbyte.protocol.models.v0.AirbyteStreamStatusTraceMessage
+import io.airbyte.protocol.models.v0.AirbyteTraceMessage
 import io.airbyte.protocol.models.v0.CatalogHelpers
 import io.airbyte.protocol.models.v0.ConfiguredAirbyteCatalog
 import io.airbyte.protocol.models.v0.StreamDescriptor
 import java.io.IOException
 import java.math.BigDecimal
 import java.time.Instant
+import java.util.Optional
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.TimeoutException
@@ -45,15 +49,19 @@ import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Nested
 import org.junit.jupiter.api.Test
-import org.mockito.ArgumentMatchers
+import org.mockito.ArgumentCaptor
 import org.mockito.Mockito
+import org.mockito.kotlin.any
+import org.mockito.kotlin.capture
 
 class AsyncStreamConsumerTest {
     companion object {
         private const val RECORD_SIZE_20_BYTES = 20
         private const val SCHEMA_NAME = "public"
+        private const val DEFAULT_NAMESPACE = "default_ns"
         private const val STREAM_NAME = "id_and_name"
         private const val STREAM_NAME2 = STREAM_NAME + 2
+        private const val STREAM_NAME3 = "stream_with_no_namespace"
         private val STREAM1_DESC: StreamDescriptor =
             StreamDescriptor().withNamespace(SCHEMA_NAME).withName(STREAM_NAME)
 
@@ -70,6 +78,12 @@ class AsyncStreamConsumerTest {
                         CatalogHelpers.createConfiguredAirbyteStream(
                             STREAM_NAME2,
                             SCHEMA_NAME,
+                            Field.of("id", JsonSchemaType.NUMBER),
+                            Field.of("name", JsonSchemaType.STRING),
+                        ),
+                        CatalogHelpers.createConfiguredAirbyteStream(
+                            STREAM_NAME3,
+                            null,
                             Field.of("id", JsonSchemaType.NUMBER),
                             Field.of("name", JsonSchemaType.STRING),
                         ),
@@ -114,6 +128,68 @@ class AsyncStreamConsumerTest {
                                 .withStreamState(Jsons.jsonNode(2)),
                         ),
                 )
+
+        private val STREAM1_SUCCESS_MESSAGE =
+            Jsons.serialize(
+                AirbyteMessage()
+                    .withType(AirbyteMessage.Type.TRACE)
+                    .withTrace(
+                        AirbyteTraceMessage()
+                            .withType(AirbyteTraceMessage.Type.STREAM_STATUS)
+                            .withStreamStatus(
+                                AirbyteStreamStatusTraceMessage()
+                                    .withStreamDescriptor(
+                                        StreamDescriptor()
+                                            .withName(STREAM_NAME)
+                                            .withNamespace(SCHEMA_NAME),
+                                    )
+                                    .withStatus(
+                                        AirbyteStreamStatusTraceMessage.AirbyteStreamStatus.COMPLETE
+                                    ),
+                            ),
+                    ),
+            )
+        private val STREAM2_FAILURE_MESSAGE =
+            Jsons.serialize(
+                AirbyteMessage()
+                    .withType(AirbyteMessage.Type.TRACE)
+                    .withTrace(
+                        AirbyteTraceMessage()
+                            .withType(AirbyteTraceMessage.Type.STREAM_STATUS)
+                            .withStreamStatus(
+                                AirbyteStreamStatusTraceMessage()
+                                    .withStreamDescriptor(
+                                        StreamDescriptor()
+                                            .withName(STREAM_NAME2)
+                                            .withNamespace(SCHEMA_NAME),
+                                    )
+                                    .withStatus(
+                                        AirbyteStreamStatusTraceMessage.AirbyteStreamStatus
+                                            .INCOMPLETE
+                                    ),
+                            ),
+                    ),
+            )
+        private val STREAM3_SUCCESS_MESSAGE =
+            Jsons.serialize(
+                AirbyteMessage()
+                    .withType(AirbyteMessage.Type.TRACE)
+                    .withTrace(
+                        AirbyteTraceMessage()
+                            .withType(AirbyteTraceMessage.Type.STREAM_STATUS)
+                            .withStreamStatus(
+                                AirbyteStreamStatusTraceMessage()
+                                    .withStreamDescriptor(
+                                        StreamDescriptor()
+                                            // Note: no namespace.
+                                            .withName(STREAM_NAME3),
+                                    )
+                                    .withStatus(
+                                        AirbyteStreamStatusTraceMessage.AirbyteStreamStatus.COMPLETE
+                                    ),
+                            ),
+                    ),
+            )
     }
 
     private lateinit var consumer: AsyncStreamConsumer
@@ -145,9 +221,9 @@ class AsyncStreamConsumerTest {
                 onClose = onClose,
                 onFlush = flushFunction,
                 catalog = CATALOG,
-                bufferManager = BufferManager("default_ns"),
+                bufferManager = BufferManager(DEFAULT_NAMESPACE),
                 flushFailure = flushFailure,
-                defaultNamespace = "default_ns",
+                defaultNamespace = DEFAULT_NAMESPACE,
                 airbyteMessageDeserializer = airbyteMessageDeserializer,
                 workerPool = Executors.newFixedThreadPool(5),
             )
@@ -427,6 +503,44 @@ class AsyncStreamConsumerTest {
         }
     }
 
+    @Test
+    @Throws(Exception::class)
+    internal fun testStreamStatusHandling() {
+        val expectedRecords = generateRecords(1000)
+
+        consumer.start()
+        consumeRecords(consumer, expectedRecords)
+        consumer.accept(STREAM1_SUCCESS_MESSAGE, STREAM1_SUCCESS_MESSAGE.length)
+        consumer.accept(STREAM2_FAILURE_MESSAGE, STREAM2_FAILURE_MESSAGE.length)
+        consumer.accept(STREAM3_SUCCESS_MESSAGE, STREAM3_SUCCESS_MESSAGE.length)
+        consumer.close()
+
+        val captor: ArgumentCaptor<Map<StreamDescriptor, StreamSyncSummary>> =
+            ArgumentCaptor.captor()
+        Mockito.verify(onClose).accept(any(), capture(captor))
+        assertEquals(
+            mapOf(
+                StreamDescriptor().withNamespace(SCHEMA_NAME).withName(STREAM_NAME) to
+                    StreamSyncSummary(
+                        Optional.of(expectedRecords.size.toLong()),
+                        AirbyteStreamStatusTraceMessage.AirbyteStreamStatus.COMPLETE,
+                    ),
+                StreamDescriptor().withNamespace(SCHEMA_NAME).withName(STREAM_NAME2) to
+                    StreamSyncSummary(
+                        Optional.of(0),
+                        AirbyteStreamStatusTraceMessage.AirbyteStreamStatus.INCOMPLETE,
+                    ),
+                // Note that we set the default namespace, since the original namespace was null.
+                StreamDescriptor().withNamespace(DEFAULT_NAMESPACE).withName(STREAM_NAME3) to
+                    StreamSyncSummary(
+                        Optional.of(0),
+                        AirbyteStreamStatusTraceMessage.AirbyteStreamStatus.COMPLETE,
+                    ),
+            ),
+            captor.value,
+        )
+    }
+
     @Nested
     internal inner class ErrorHandling {
         @Test
@@ -529,7 +643,7 @@ class AsyncStreamConsumerTest {
     @Throws(Exception::class)
     private fun verifyStartAndClose() {
         Mockito.verify(onStart).call()
-        Mockito.verify(onClose).accept(ArgumentMatchers.any(), ArgumentMatchers.any())
+        Mockito.verify(onClose).accept(any(), any())
     }
 
     @Throws(Exception::class)

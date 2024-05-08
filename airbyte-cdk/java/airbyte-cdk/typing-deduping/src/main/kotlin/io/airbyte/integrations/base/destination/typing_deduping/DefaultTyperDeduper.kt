@@ -299,11 +299,7 @@ class DefaultTyperDeduper<DestinationState : MinimumDestinationState>(
                     return@filter false
                 }
                 // Skip if we don't have any records for this stream.
-                val streamSyncSummary =
-                    streamSyncSummaries.getOrDefault(
-                        streamConfig.id.asStreamDescriptor(),
-                        StreamSyncSummary.DEFAULT
-                    )
+                val streamSyncSummary = streamSyncSummaries[streamConfig.id.asStreamDescriptor()]!!
                 val nonzeroRecords =
                     streamSyncSummary.recordsWritten
                         .map { r: Long ->
