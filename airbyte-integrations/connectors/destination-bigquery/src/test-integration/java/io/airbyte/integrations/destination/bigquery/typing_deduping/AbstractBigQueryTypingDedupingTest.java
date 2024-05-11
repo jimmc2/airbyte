@@ -33,6 +33,7 @@ import io.airbyte.workers.exception.TestHarnessException;
 import java.io.IOException;
 import java.nio.file.Path;
 import java.util.List;
+import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 
 public abstract class AbstractBigQueryTypingDedupingTest extends BaseTypingDedupingTest {
@@ -96,6 +97,7 @@ public abstract class AbstractBigQueryTypingDedupingTest extends BaseTypingDedup
    * _airbyte_data). Then run a sync using our current version.
    */
   @Test
+  @Disabled("We no longer need to run V2 migrators, this was a safety net during DV2 beta period")
   public void testRawTableJsonToStringMigration() throws Exception {
     final ConfiguredAirbyteCatalog catalog = new ConfiguredAirbyteCatalog().withStreams(List.of(
         new ConfiguredAirbyteStream()
