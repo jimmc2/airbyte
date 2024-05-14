@@ -2,6 +2,8 @@
 # Copyright (c) 2023 Airbyte, Inc., all rights reserved.
 #
 
+import uuid
+
 from dagger import CacheSharingMode, CacheVolume, Client, Container
 from pipelines.airbyte_ci.connectors.context import PipelineContext
 from pipelines.consts import (
@@ -33,6 +35,7 @@ def with_python_base(context: PipelineContext, python_version: str = "3.10") -> 
 
     base_container = (
         context.dagger_client.container()
+        .with_env_variable("CACHE_BUSTER", str(uuid.uuid4()))
         .from_(f"python:{python_version}-slim")
         .with_mounted_cache("/root/.cache/pip", pip_cache)
         .with_exec(
